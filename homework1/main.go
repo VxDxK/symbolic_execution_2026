@@ -33,4 +33,5 @@ func testFunction(x int) int {
 		log.Fatalf("Ошибка построения SSA: %v", err)
 	}
 	fmt.Printf("CFG построен для функции с %d блоками\n", len(graph.Blocks))
+	ssa.PrintFunction(graph)
 }
