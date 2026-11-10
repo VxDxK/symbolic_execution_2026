@@ -340,3 +340,74 @@ func TestSolverDiscoversOverflow(t *testing.T) {
 		t.Fatalf("overflow result bits = %d, want 128", bits)
 	}
 }
+
+func TestTypedSMTArrays(t *testing.T) {
+	translator := tr.NewZ3Translator()
+	defer translator.Close()
+	intType := s.ScalarType(s.Int16Type)
+	indexType := s.ScalarType(s.Uint32Type)
+	index := integer(7, s.Uint32Type)
+	value := integer(-123, s.Int16Type)
+	base := s.NewConstantArray(indexType, integer(0, s.Int16Type))
+	updated := s.NewArrayStore(base, index, value)
+	assertInteger(t, s.NewArraySelect(updated, index), -123)
+	assertInteger(t, s.NewArraySelect(updated, integer(8, s.Uint32Type)), 0)
+	nested := s.NewArrayStore(s.NewConstantArray(s.ScalarType(s.IntType), base), s.NewIntConstant(3), updated)
+	inner := s.NewArraySelect(nested, s.NewIntConstant(3))
+	assertInteger(t, s.NewArraySelect(inner, index), -123)
+	booleanArray := s.NewConstantArray(indexType, s.NewBoolConstant(false))
+	boolean := s.NewArraySelect(s.NewArrayStore(booleanArray, index, s.NewBoolConstant(true)), index)
+	if literal, ok := evaluate(t, boolean).(z3.Bool).AsBool(); !ok || !literal {
+		t.Fatal("incorrect boolean array element")
+	}
+
+	array := s.NewArrayVariable("typed", s.ArraySort(indexType, intType))
+	translated := translate(t, translator, array).(z3.Array)
+	if translated.Sort().String() != "(Array (_ BitVec 32) (_ BitVec 16))" {
+		t.Fatalf("wrong array sort: %s", translated.Sort())
+	}
+	layout := s.StructLayout("Target", intType)
+	reference := s.NewSymbolicRef("pointer", layout)
+	address := translate(t, translator, reference).(z3.BV)
+	if address.Sort().BVSize() != s.UintptrType.BitWidth() {
+		t.Fatal("reference address has wrong width")
+	}
+	if bits, _, _ := evaluate(t, s.NewNilRef(layout)).(z3.BV).AsUint64(); bits != 0 {
+		t.Fatal("nil reference is not zero")
+	}
+	referenceArray := s.NewConstantArray(indexType, s.NewNilRef(layout))
+	read := s.NewArraySelect(s.NewArrayStore(referenceArray, index, reference), index)
+	equality := s.NewBinaryOperation(read, reference, s.EQ)
+	solver := z3.NewSolver(translator.GetContext().(*z3.Context))
+	solver.Assert(translate(t, translator, equality).(z3.Bool).Not())
+	checkSAT(t, solver, false)
+}
+
+func TestArrayVariableCacheSignatures(t *testing.T) {
+	translator := tr.NewZ3Translator()
+	defer translator.Close()
+	intType := s.ScalarType(s.IntType)
+	original := s.NewArrayVariable("same", s.ArrayLayout(intType))
+	first := translate(t, translator, original)
+	if again := translate(t, translator, s.NewArrayVariable("same", s.ArrayLayout(intType))); first.String() != again.String() {
+		t.Fatal("array cache is unstable")
+	}
+	for _, conflict := range []s.SymbolicExpression{
+		s.NewArrayVariable("same", s.ArrayLayout(s.ScalarType(s.BoolType))),
+		s.NewArrayVariable("same", s.ArraySort(s.ScalarType(s.UintType), intType)),
+		s.NewArrayVariable("same", s.ArrayLayout(s.ArrayLayout(intType))),
+		s.NewSymbolicVariable("same", s.IntType),
+	} {
+		if _, err := translator.TranslateExpression(conflict); err == nil {
+			t.Fatal("expected conflicting variable signature error")
+		}
+	}
+	nestedConflict := s.NewArraySelect(s.NewArrayStore(s.NewArrayVariable("same", s.ArrayLayout(s.ScalarType(s.BoolType))), s.NewIntConstant(0), s.NewBoolConstant(true)), s.NewIntConstant(0))
+	if _, err := translator.TranslateExpression(nestedConflict); err == nil {
+		t.Fatal("nested translation lost error")
+	}
+	// An error must not poison the next translation.
+	translate(t, translator, original)
+	translator.Reset()
+	translate(t, translator, s.NewArrayVariable("same", s.ArrayLayout(s.ScalarType(s.BoolType))))
+}

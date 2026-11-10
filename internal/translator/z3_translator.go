@@ -8,7 +8,7 @@ import (
 )
 
 type cachedVariable struct {
-	typeOf symbolic.ExpressionType
+	typeOf string
 	value  z3.Value
 }
 
@@ -50,18 +50,64 @@ func (zt *Z3Translator) TranslateExpression(expr symbolic.SymbolicExpression) (i
 }
 
 func (zt *Z3Translator) VisitVariable(expr *symbolic.SymbolicVariable) interface{} {
-	if cached, ok := zt.vars[expr.Name]; ok {
-		if cached.typeOf != expr.Type() {
-			return zt.fail(expr, "variable %q is already declared as %s, not %s", expr.Name, cached.typeOf, expr.Type())
+	if !expr.Type().IsInteger() && expr.Type() != symbolic.BoolType {
+		return zt.fail(expr, "unsupported variable type %s", expr.Type())
+	}
+	return zt.variable(expr.Name, symbolic.TypeOf(expr), expr)
+}
+
+func (zt *Z3Translator) variable(name string, typ *symbolic.TypeInfo, expr symbolic.SymbolicExpression) interface{} {
+	if cached, ok := zt.vars[name]; ok {
+		if cached.typeOf != typ.String() {
+			return zt.fail(expr, "variable %q is already declared as %s, not %s", name, cached.typeOf, typ)
 		}
 		return cached.value
 	}
-	value := zt.createZ3Variable(expr.Name, expr.Type())
-	if value == nil {
-		return zt.fail(expr, "unsupported variable type %s", expr.Type())
-	}
-	zt.vars[expr.Name] = cachedVariable{typeOf: expr.Type(), value: value}
+	value := zt.ctx.Const(name, zt.sort(typ))
+	zt.vars[name] = cachedVariable{typeOf: typ.String(), value: value}
 	return value
+}
+
+func (zt *Z3Translator) sort(typ *symbolic.TypeInfo) z3.Sort {
+	switch typ.Kind() {
+	case symbolic.BoolType:
+		return zt.ctx.BoolSort()
+	case symbolic.RefType:
+		return zt.ctx.BVSort(symbolic.UintptrType.BitWidth())
+	case symbolic.ArrayType:
+		return zt.ctx.ArraySort(zt.sort(typ.Domain()), zt.sort(typ.Element()))
+	default:
+		return zt.ctx.BVSort(typ.Kind().BitWidth())
+	}
+}
+
+func (zt *Z3Translator) VisitRef(expr *symbolic.Ref) interface{} { return expr.Address().Accept(zt) }
+func (zt *Z3Translator) VisitArrayVariable(expr *symbolic.ArrayVariable) interface{} {
+	return zt.variable(expr.Name(), expr.ValueType(), expr)
+}
+func (zt *Z3Translator) VisitConstantArray(expr *symbolic.ConstantArray) interface{} {
+	value := expr.Value().Accept(zt)
+	if zt.err != nil {
+		return nil
+	}
+	return zt.ctx.ConstArray(zt.sort(expr.Domain()), value.(z3.Value))
+}
+func (zt *Z3Translator) VisitArraySelect(expr *symbolic.ArraySelect) interface{} {
+	array := expr.Array().Accept(zt)
+	index := expr.Index().Accept(zt)
+	if zt.err != nil {
+		return nil
+	}
+	return array.(z3.Array).Select(index.(z3.Value))
+}
+func (zt *Z3Translator) VisitArrayStore(expr *symbolic.ArrayStore) interface{} {
+	array := expr.Array().Accept(zt)
+	index := expr.Index().Accept(zt)
+	value := expr.Value().Accept(zt)
+	if zt.err != nil {
+		return nil
+	}
+	return array.(z3.Array).Store(index.(z3.Value), value.(z3.Value))
 }
 
 func (zt *Z3Translator) VisitIntConstant(expr *symbolic.IntConstant) interface{} {
@@ -285,3 +331,6 @@ func (zt *Z3Translator) fail(expr symbolic.SymbolicExpression, format string, ar
 	}
 	return nil
 }
+
+var _ Translator = (*Z3Translator)(nil)
+var _ ExpressionTranslator = (*Z3Translator)(nil)

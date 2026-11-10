@@ -145,11 +145,14 @@ func NewBinaryOperation(left, right SymbolicExpression, op BinaryOperator) *Bina
 	case LT, LE, GT, GE:
 		requireSameIntegerTypes(leftType, rightType, op.String())
 	case EQ, NE:
-		if leftType != rightType || (!leftType.IsInteger() && leftType != BoolType) {
+		if leftType != rightType || (!leftType.IsInteger() && leftType != BoolType && leftType != RefType) {
 			panic(fmt.Sprintf("operator %s requires operands of the same primitive type, got %s and %s", op, leftType, rightType))
 		}
 	default:
 		panic(fmt.Sprintf("unsupported binary operator %d", op))
+	}
+	if leftType == RefType && !TypeOf(left).Equal(TypeOf(right)) {
+		panic("reference target type mismatch")
 	}
 	return &BinaryOperation{Left: left, Right: right, Operator: op}
 }
@@ -386,23 +389,105 @@ func (op LogicalOperator) String() string {
 }
 
 type Ref struct {
-	// TODO: Выбрать и написать внутреннее представление символьной ссылки
+	address SymbolicExpression
+	target  *TypeInfo
 }
 
-func (ref *Ref) Type() ExpressionType {
-	panic("не реализовано")
+func NewRef(address SymbolicExpression, target *TypeInfo) *Ref {
+	requireType(target)
+	if address == nil || address.Type() != UintptrType {
+		panic("reference address must have uintptr type")
+	}
+	return &Ref{address: address, target: target}
 }
 
-func (ref *Ref) String() string {
-	panic("не реализовано")
+func NewSymbolicRef(name string, target *TypeInfo) *Ref {
+	return NewRef(NewSymbolicVariable(name, UintptrType), target)
 }
 
-func (ref *Ref) Accept(visitor Visitor) interface{} {
-	panic("не реализовано")
+func NewNilRef(target *TypeInfo) *Ref {
+	return NewRef(NewTypedIntConstant(0, UintptrType), target)
 }
 
-// TODO: Добавьте дополнительные типы выражений по необходимости:
-// - UnaryOperation (унарные операции: -x, !x)
-// - ArrayAccess (доступ к элементам массива: arr[index])
-// - FunctionCall (вызовы функций: f(x, y))
-// - ConditionalExpression (тернарный оператор: condition ? true_expr : false_expr)
+func (ref *Ref) Type() ExpressionType               { return RefType }
+func (ref *Ref) String() string                     { return "ref(" + ref.address.String() + ")" }
+func (ref *Ref) Accept(visitor Visitor) interface{} { return visitor.VisitRef(ref) }
+func (ref *Ref) Address() SymbolicExpression        { return ref.address }
+func (ref *Ref) Target() *TypeInfo                  { return ref.target }
+func (ref *Ref) ValueType() *TypeInfo               { return ReferenceType(ref.target) }
+
+// Array expressions retain their operands so later writes cannot change old reads.
+type ArrayVariable struct {
+	name string
+	sort *TypeInfo
+}
+type ConstantArray struct {
+	domain *TypeInfo
+	value  SymbolicExpression
+}
+type ArraySelect struct{ array, index SymbolicExpression }
+type ArrayStore struct{ array, index, value SymbolicExpression }
+
+func NewArrayVariable(name string, sort *TypeInfo) *ArrayVariable {
+	requireType(sort)
+	if sort.Kind() != ArrayType || name == "" {
+		panic("array variable requires a name and array sort")
+	}
+	return &ArrayVariable{name: name, sort: sort}
+}
+func NewConstantArray(domain *TypeInfo, value SymbolicExpression) *ConstantArray {
+	ArraySort(domain, TypeOf(value))
+	return &ConstantArray{domain: domain, value: value}
+}
+func NewArraySelect(array, index SymbolicExpression) SymbolicExpression {
+	sort := TypeOf(array)
+	if sort.Kind() != ArrayType || !sort.Domain().Equal(TypeOf(index)) {
+		panic("array select index type mismatch")
+	}
+	result := &ArraySelect{array: array, index: index}
+	if sort.Element().Kind() == RefType {
+		return NewRef(&referenceAddress{selection: result}, sort.Element().Target())
+	}
+	return result
+}
+
+// referenceAddress exposes the bit-vector behind a reference-valued select.
+type referenceAddress struct{ selection *ArraySelect }
+
+func (e *referenceAddress) Type() ExpressionType         { return UintptrType }
+func (e *referenceAddress) String() string               { return e.selection.String() }
+func (e *referenceAddress) Accept(v Visitor) interface{} { return v.VisitArraySelect(e.selection) }
+
+func NewArrayStore(array, index, value SymbolicExpression) *ArrayStore {
+	sort := TypeOf(array)
+	if sort.Kind() != ArrayType || !sort.Domain().Equal(TypeOf(index)) || !sort.Element().Equal(TypeOf(value)) {
+		panic("array store type mismatch")
+	}
+	return &ArrayStore{array: array, index: index, value: value}
+}
+func (e *ArrayVariable) Type() ExpressionType         { return ArrayType }
+func (e *ArrayVariable) ValueType() *TypeInfo         { return e.sort }
+func (e *ArrayVariable) Name() string                 { return e.name }
+func (e *ArrayVariable) String() string               { return e.name }
+func (e *ArrayVariable) Accept(v Visitor) interface{} { return v.VisitArrayVariable(e) }
+func (e *ConstantArray) Type() ExpressionType         { return ArrayType }
+func (e *ConstantArray) ValueType() *TypeInfo         { return ArraySort(e.domain, TypeOf(e.value)) }
+func (e *ConstantArray) Domain() *TypeInfo            { return e.domain }
+func (e *ConstantArray) Value() SymbolicExpression    { return e.value }
+func (e *ConstantArray) String() string               { return "const(" + e.value.String() + ")" }
+func (e *ConstantArray) Accept(v Visitor) interface{} { return v.VisitConstantArray(e) }
+func (e *ArraySelect) Type() ExpressionType           { return e.ValueType().Kind() }
+func (e *ArraySelect) ValueType() *TypeInfo           { return TypeOf(e.array).Element() }
+func (e *ArraySelect) Array() SymbolicExpression      { return e.array }
+func (e *ArraySelect) Index() SymbolicExpression      { return e.index }
+func (e *ArraySelect) String() string                 { return fmt.Sprintf("select(%s, %s)", e.array, e.index) }
+func (e *ArraySelect) Accept(v Visitor) interface{}   { return v.VisitArraySelect(e) }
+func (e *ArrayStore) Type() ExpressionType            { return ArrayType }
+func (e *ArrayStore) ValueType() *TypeInfo            { return TypeOf(e.array) }
+func (e *ArrayStore) Array() SymbolicExpression       { return e.array }
+func (e *ArrayStore) Index() SymbolicExpression       { return e.index }
+func (e *ArrayStore) Value() SymbolicExpression       { return e.value }
+func (e *ArrayStore) String() string {
+	return fmt.Sprintf("store(%s, %s, %s)", e.array, e.index, e.value)
+}
+func (e *ArrayStore) Accept(v Visitor) interface{} { return v.VisitArrayStore(e) }

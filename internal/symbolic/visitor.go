@@ -9,4 +9,9 @@ type Visitor interface {
 	VisitLogicalOperation(expr *LogicalOperation) interface{}
 	VisitUnaryOperation(expr *UnaryOperation) interface{}
 	VisitConversion(expr *Conversion) interface{}
+	VisitRef(expr *Ref) interface{}
+	VisitArrayVariable(expr *ArrayVariable) interface{}
+	VisitConstantArray(expr *ConstantArray) interface{}
+	VisitArraySelect(expr *ArraySelect) interface{}
+	VisitArrayStore(expr *ArrayStore) interface{}
 }

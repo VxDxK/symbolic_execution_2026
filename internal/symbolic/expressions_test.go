@@ -154,10 +154,28 @@ func (v *dispatchVisitor) VisitConversion(e *s.Conversion) interface{} {
 	return v.record("conversion", e)
 }
 
+func (v *dispatchVisitor) VisitRef(e *s.Ref) interface{} { return v.record("Ref", e) }
+func (v *dispatchVisitor) VisitArrayVariable(e *s.ArrayVariable) interface{} {
+	return v.record("ArrayVariable", e)
+}
+func (v *dispatchVisitor) VisitConstantArray(e *s.ConstantArray) interface{} {
+	return v.record("ConstantArray", e)
+}
+func (v *dispatchVisitor) VisitArraySelect(e *s.ArraySelect) interface{} {
+	return v.record("ArraySelect", e)
+}
+func (v *dispatchVisitor) VisitArrayStore(e *s.ArrayStore) interface{} {
+	return v.record("ArrayStore", e)
+}
+
 func TestVisitorDispatch(t *testing.T) {
 	i, b := s.NewIntConstant(1), s.NewBoolConstant(true)
+	a := s.NewArrayVariable("a", s.ArrayLayout(s.ScalarType(s.IntType)))
 	for kind, expr := range map[string]s.SymbolicExpression{
 		"variable": s.NewSymbolicVariable("x", s.IntType), "integer": i, "boolean": b,
+		"Ref": s.NewNilRef(s.ScalarType(s.IntType)), "ArrayVariable": a,
+		"ConstantArray": s.NewConstantArray(s.ScalarType(s.IntType), i),
+		"ArraySelect":   s.NewArraySelect(a, i), "ArrayStore": s.NewArrayStore(a, i, i),
 		"binary": s.NewBinaryOperation(i, i, s.ADD), "logical": s.NewLogicalOperation([]s.SymbolicExpression{b}, s.NOT),
 		"unary": s.NewUnaryOperation(i, s.NEG), "conversion": s.NewConversion(i, s.Int8Type),
 	} {
@@ -167,6 +185,56 @@ func TestVisitorDispatch(t *testing.T) {
 			if result != "visited" || v.kind != kind || v.expr != expr {
 				t.Fatalf("incorrect visitor dispatch: %s", v.kind)
 			}
+		})
+	}
+}
+
+func TestMemoryExpressionTypesAndValidation(t *testing.T) {
+	integer := s.ScalarType(s.IntType)
+	fields := []*s.TypeInfo{integer}
+	layout := s.StructLayout("Immutable", fields...)
+	fields[0] = s.ScalarType(s.BoolType)
+	exposed := layout.Fields()
+	exposed[0] = s.ScalarType(s.UintType)
+	if !layout.Fields()[0].Equal(integer) {
+		t.Fatal("layout retained mutable field slice")
+	}
+	ref := s.NewSymbolicRef("p", layout)
+	if ref.Type() != s.RefType || ref.String() != "ref(p)" || !s.TypeOf(ref).Equal(s.ReferenceType(layout)) {
+		t.Fatal("incorrect reference type")
+	}
+	array := s.NewArrayVariable("refs", s.ArrayLayout(s.ReferenceType(layout)))
+	selected := s.NewArraySelect(array, s.NewIntConstant(0))
+	if selected.Type() != s.RefType || !s.TypeOf(selected).Equal(s.ReferenceType(layout)) {
+		t.Fatal("incorrect reference select type")
+	}
+	scalarArray := s.NewArrayVariable("ints", s.ArrayLayout(integer))
+	for name, build := range map[string]func(){
+		"reference arithmetic":        func() { s.NewBinaryOperation(ref, ref, s.ADD) },
+		"reference ordering":          func() { s.NewBinaryOperation(ref, ref, s.LT) },
+		"different reference targets": func() { s.NewBinaryOperation(ref, s.NewNilRef(integer), s.EQ) },
+		"signed address":              func() { s.NewRef(s.NewIntConstant(1), layout) },
+		"missing target":              func() { s.NewNilRef(nil) },
+		"missing domain":              func() { s.ArraySort(nil, integer) },
+		"aggregate sort":              func() { s.ArraySort(integer, layout) },
+		"anonymous layout":            func() { s.StructLayout("", integer) },
+		"aggregate field":             func() { s.StructLayout("Nested", layout) },
+		"non-array variable":          func() { s.NewArrayVariable("x", integer) },
+		"untyped select":              func() { s.NewArraySelect(s.NewSymbolicVariable("x", s.ArrayType), s.NewIntConstant(0)) },
+		"wrong index sort":            func() { s.NewArraySelect(scalarArray, s.NewTypedIntConstant(0, s.UintType)) },
+		"wrong element sort":          func() { s.NewArrayStore(scalarArray, s.NewIntConstant(0), s.NewBoolConstant(true)) },
+		"wrong reference element":     func() { s.NewArrayStore(array, s.NewIntConstant(0), s.NewNilRef(integer)) },
+		"nil array":                   func() { s.NewArraySelect(nil, s.NewIntConstant(0)) },
+		"nil index":                   func() { s.NewArraySelect(scalarArray, nil) },
+		"nil value":                   func() { s.NewArrayStore(scalarArray, s.NewIntConstant(0), nil) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected constructor panic")
+				}
+			}()
+			build()
 		})
 	}
 }
