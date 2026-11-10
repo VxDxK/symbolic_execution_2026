@@ -1,7 +1,11 @@
 // Package symbolic определяет базовые типы символьных выражений
 package symbolic
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // ExpressionType представляет тип символьного выражения
 type ExpressionType int
@@ -20,6 +24,8 @@ const (
 	Uint32Type
 	Uint64Type
 	UintptrType
+	RefType
+	StructType
 )
 
 const (
@@ -56,6 +62,10 @@ func (et ExpressionType) String() string {
 		return "uint64"
 	case UintptrType:
 		return "uintptr"
+	case RefType:
+		return "ref"
+	case StructType:
+		return "struct"
 	default:
 		return "unknown"
 	}
@@ -95,4 +105,92 @@ func (et ExpressionType) IsSigned() bool {
 	default:
 		return false
 	}
+}
+
+// TypeInfo is an immutable description of a value or allocated object.
+type TypeInfo struct {
+	kind                    ExpressionType
+	domain, element, target *TypeInfo
+	name                    string
+	fields                  []*TypeInfo
+}
+
+func ScalarType(kind ExpressionType) *TypeInfo {
+	if !kind.IsInteger() && kind != BoolType {
+		panic("scalar type must be integer or boolean")
+	}
+	return &TypeInfo{kind: kind}
+}
+
+func ReferenceType(target *TypeInfo) *TypeInfo {
+	requireType(target)
+	return &TypeInfo{kind: RefType, target: target}
+}
+
+func ArraySort(domain, element *TypeInfo) *TypeInfo {
+	requireType(domain)
+	requireType(element)
+	if domain.kind == StructType || element.kind == StructType {
+		panic("SMT arrays require value sorts")
+	}
+	return &TypeInfo{kind: ArrayType, domain: domain, element: element}
+}
+
+func StructLayout(name string, fields ...*TypeInfo) *TypeInfo {
+	if name == "" {
+		panic("struct layout requires a name")
+	}
+	for _, field := range fields {
+		requireType(field)
+		if field.kind == StructType || field.kind == ArrayType {
+			panic("aggregate fields must be represented by references")
+		}
+	}
+	return &TypeInfo{kind: StructType, name: name, fields: append([]*TypeInfo(nil), fields...)}
+}
+
+func ArrayLayout(element *TypeInfo) *TypeInfo {
+	return ArraySort(ScalarType(IntType), element)
+}
+
+func requireType(t *TypeInfo) {
+	if t == nil {
+		panic("type description must not be nil")
+	}
+}
+
+func (t *TypeInfo) Kind() ExpressionType { return t.kind }
+func (t *TypeInfo) Domain() *TypeInfo    { return t.domain }
+func (t *TypeInfo) Element() *TypeInfo   { return t.element }
+func (t *TypeInfo) Target() *TypeInfo    { return t.target }
+func (t *TypeInfo) Name() string         { return t.name }
+func (t *TypeInfo) Fields() []*TypeInfo  { return append([]*TypeInfo(nil), t.fields...) }
+func (t *TypeInfo) Equal(other *TypeInfo) bool {
+	return t != nil && other != nil && t.String() == other.String()
+}
+func (t *TypeInfo) String() string {
+	switch t.kind {
+	case RefType:
+		return "ref(" + t.target.String() + ")"
+	case ArrayType:
+		return "array(" + t.domain.String() + "," + t.element.String() + ")"
+	case StructType:
+		fields := make([]string, len(t.fields))
+		for i, field := range t.fields {
+			fields[i] = field.String()
+		}
+		return fmt.Sprintf("struct(%q;%s)", t.name, strings.Join(fields, ","))
+	default:
+		return t.kind.String()
+	}
+}
+
+func TypeOf(expr SymbolicExpression) *TypeInfo {
+	if expr == nil {
+		panic("expression must not be nil")
+	}
+	if typed, ok := expr.(interface{ ValueType() *TypeInfo }); ok {
+		return typed.ValueType()
+	}
+	return ScalarType(expr.Type())
 }
