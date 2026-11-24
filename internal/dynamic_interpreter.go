@@ -14,6 +14,8 @@ import (
 	"symbolic-execution-course/internal/symbolic"
 )
 
+const maxBlockVisits = 32
+
 type ExecutionStatus string
 
 const (
@@ -30,6 +32,7 @@ type Interpreter struct {
 	Heap          memory.Memory
 	Status        ExecutionStatus
 	Diagnostic    string
+	blockVisits   map[*ssa.BasicBlock]int
 	pathFormula   z3.Bool
 }
 
@@ -49,6 +52,10 @@ func (interpreter *Interpreter) frame() *CallStackFrame {
 
 func (interpreter *Interpreter) clone() Interpreter {
 	result := *interpreter
+	result.blockVisits = make(map[*ssa.BasicBlock]int, len(interpreter.blockVisits))
+	for block, visits := range interpreter.blockVisits {
+		result.blockVisits[block] = visits
+	}
 	result.CallStack = append([]CallStackFrame(nil), interpreter.CallStack...)
 	for i := range result.CallStack {
 		frame := &result.CallStack[i]
@@ -62,6 +69,15 @@ func (interpreter *Interpreter) clone() Interpreter {
 }
 
 func (interpreter *Interpreter) enter(block *ssa.BasicBlock) {
+	if interpreter.blockVisits == nil {
+		interpreter.blockVisits = make(map[*ssa.BasicBlock]int)
+	}
+	interpreter.blockVisits[block]++
+	if interpreter.blockVisits[block] > maxBlockVisits {
+		interpreter.Status = LimitReached
+		interpreter.Diagnostic = "block visit limit reached"
+		return
+	}
 	frame := interpreter.frame()
 	frame.PreviousBlock, frame.CurrentBlock, frame.InstructionIndex = frame.CurrentBlock, block, 0
 	predecessor := -1
