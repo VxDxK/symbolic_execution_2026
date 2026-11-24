@@ -172,6 +172,7 @@ func TestVisitorDispatch(t *testing.T) {
 	i, b := s.NewIntConstant(1), s.NewBoolConstant(true)
 	a := s.NewArrayVariable("a", s.ArrayLayout(s.ScalarType(s.IntType)))
 	for kind, expr := range map[string]s.SymbolicExpression{
+		"float":    s.NewFloatConstant(1.1),
 		"variable": s.NewSymbolicVariable("x", s.IntType), "integer": i, "boolean": b,
 		"Ref": s.NewNilRef(s.ScalarType(s.IntType)), "ArrayVariable": a,
 		"ConstantArray": s.NewConstantArray(s.ScalarType(s.IntType), i),
@@ -237,4 +238,34 @@ func TestMemoryExpressionTypesAndValidation(t *testing.T) {
 			build()
 		})
 	}
+}
+
+func TestFloatExpressions(t *testing.T) {
+	x := s.NewSymbolicVariable("x", s.Float64Type)
+	c := s.NewFloatConstant(1.1)
+	if c.Type() != s.Float64Type || c.String() != "1.1" || s.ScalarType(s.Float64Type).String() != "float64" {
+		t.Fatal("float type or constant")
+	}
+	for _, op := range []s.BinaryOperator{s.ADD, s.SUB, s.MUL, s.DIV} {
+		if s.NewBinaryOperation(x, c, op).Type() != s.Float64Type {
+			t.Fatal(op)
+		}
+	}
+	if s.NewBinaryOperation(x, c, s.LT).Type() != s.BoolType || s.NewUnaryOperation(x, s.NEG).Type() != s.Float64Type {
+		t.Fatal("expression type")
+	}
+	for _, op := range []s.BinaryOperator{s.MOD, s.BIT_AND, s.SHL} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("accepted float operator %s", op)
+				}
+			}()
+			s.NewBinaryOperation(x, c, op)
+		}()
+	}
+}
+
+func (v *dispatchVisitor) VisitFloatConstant(expr *s.FloatConstant) interface{} {
+	return v.record("float", expr)
 }

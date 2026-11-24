@@ -26,6 +26,7 @@ const (
 	UintptrType
 	RefType
 	StructType
+	Float64Type
 )
 
 const (
@@ -36,6 +37,8 @@ const (
 // String возвращает строковое представление типа
 func (et ExpressionType) String() string {
 	switch et {
+	case Float64Type:
+		return "float64"
 	case IntType:
 		return "int"
 	case BoolType:
@@ -116,8 +119,8 @@ type TypeInfo struct {
 }
 
 func ScalarType(kind ExpressionType) *TypeInfo {
-	if !kind.IsInteger() && kind != BoolType {
-		panic("scalar type must be integer or boolean")
+	if !kind.IsInteger() && kind != BoolType && kind != Float64Type {
+		panic("scalar type must be integer, boolean or float64")
 	}
 	return &TypeInfo{kind: kind}
 }

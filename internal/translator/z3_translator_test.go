@@ -3,6 +3,7 @@ package translator_test
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"testing"
 
@@ -410,4 +411,53 @@ func TestArrayVariableCacheSignatures(t *testing.T) {
 	translate(t, translator, original)
 	translator.Reset()
 	translate(t, translator, s.NewArrayVariable("same", s.ArrayLayout(s.ScalarType(s.BoolType))))
+}
+
+func TestFloat64Semantics(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		a, b float64
+		op   s.BinaryOperator
+		want float64
+	}{
+		{"rounding", 1, math.Ldexp(1, -53), s.ADD, 1},
+		{"subtract", 3, 1.1, s.SUB, 3 - 1.1},
+		{"multiply", 1.5, 2, s.MUL, 3},
+		{"infinity", 1, 0, s.DIV, math.Inf(1)},
+		{"nan", 0, 0, s.DIV, math.NaN()},
+		{"negative zero", math.Copysign(0, -1), 2, s.DIV, math.Copysign(0, -1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			translator := tr.NewZ3Translator()
+			ctx := translator.GetContext().(*z3.Context)
+			value := translate(t, translator, s.NewBinaryOperation(s.NewFloatConstant(tt.a), s.NewFloatConstant(tt.b), tt.op)).(z3.Float)
+			solver := z3.NewSolver(ctx)
+			checkSAT(t, solver, true)
+			model := solver.Model()
+			if math.IsNaN(tt.want) {
+				if b, _ := model.Eval(value.IsNaN(), true).(z3.Bool).AsBool(); !b {
+					t.Fatal("expected NaN")
+				}
+				return
+			}
+			got, lit, valid := model.Eval(value.ToIEEEBV(), true).(z3.BV).AsUint64()
+			if !lit || !valid || got != math.Float64bits(tt.want) {
+				t.Fatalf("bits %x, want %x", got, math.Float64bits(tt.want))
+			}
+		})
+	}
+	for _, tt := range []struct {
+		a, b float64
+		op   s.BinaryOperator
+		want bool
+	}{
+		{math.NaN(), 0, s.EQ, false}, {math.NaN(), 0, s.NE, true}, {math.NaN(), 0, s.LT, false},
+		{0, math.Copysign(0, -1), s.EQ, true}, {math.Inf(1), math.Inf(1), s.EQ, true},
+		{1, 2, s.LE, true}, {2, 1, s.GT, true}, {1, 1, s.GE, true},
+	} {
+		got, _ := evaluate(t, s.NewBinaryOperation(s.NewFloatConstant(tt.a), s.NewFloatConstant(tt.b), tt.op)).(z3.Bool).AsBool()
+		if got != tt.want {
+			t.Errorf("%g %s %g = %t", tt.a, tt.op, tt.b, got)
+		}
+	}
 }

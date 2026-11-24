@@ -13,6 +13,7 @@ import (
 
 const maxAnalysisSteps = 10000
 const solverTimeoutMilliseconds = 1000
+const floatSolverTimeoutMilliseconds = 30000
 
 type Analyser struct {
 	Package      *ssa.Package
@@ -33,7 +34,13 @@ func Analyse(source string, functionName string) []Interpreter {
 	}
 	a := &Analyser{Package: function.Pkg, PathSelector: &BfsPathSelector{}, Z3Translator: translator.NewZ3Translator()}
 	ctx := a.Z3Translator.GetContext().(*z3.Context)
-	ctx.Config().SetUint("timeout", solverTimeoutMilliseconds)
+	timeout := uint(solverTimeoutMilliseconds)
+	for _, param := range function.Params {
+		if expressionType(param.Type()) == symbolic.Float64Type {
+			timeout = floatSolverTimeoutMilliseconds
+		}
+	}
+	ctx.Config().SetUint("timeout", timeout)
 	a.solver = z3.NewSolver(ctx)
 	state := Interpreter{
 		Analyser:      a,
