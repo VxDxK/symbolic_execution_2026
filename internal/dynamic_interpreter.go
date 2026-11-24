@@ -14,6 +14,8 @@ import (
 	"symbolic-execution-course/internal/symbolic"
 )
 
+const maxBlockVisits = 32
+
 type ExecutionStatus string
 
 const (
@@ -30,6 +32,7 @@ type Interpreter struct {
 	Heap          memory.Memory
 	Status        ExecutionStatus
 	Diagnostic    string
+	blockVisits   map[*ssa.BasicBlock]int
 	pathFormula   z3.Bool
 }
 
@@ -49,6 +52,10 @@ func (interpreter *Interpreter) frame() *CallStackFrame {
 
 func (interpreter *Interpreter) clone() Interpreter {
 	result := *interpreter
+	result.blockVisits = make(map[*ssa.BasicBlock]int, len(interpreter.blockVisits))
+	for block, visits := range interpreter.blockVisits {
+		result.blockVisits[block] = visits
+	}
 	result.CallStack = append([]CallStackFrame(nil), interpreter.CallStack...)
 	for i := range result.CallStack {
 		frame := &result.CallStack[i]
@@ -62,6 +69,15 @@ func (interpreter *Interpreter) clone() Interpreter {
 }
 
 func (interpreter *Interpreter) enter(block *ssa.BasicBlock) {
+	if interpreter.blockVisits == nil {
+		interpreter.blockVisits = make(map[*ssa.BasicBlock]int)
+	}
+	interpreter.blockVisits[block]++
+	if interpreter.blockVisits[block] > maxBlockVisits {
+		interpreter.Status = LimitReached
+		interpreter.Diagnostic = "block visit limit reached"
+		return
+	}
 	frame := interpreter.frame()
 	frame.PreviousBlock, frame.CurrentBlock, frame.InstructionIndex = frame.CurrentBlock, block, 0
 	predecessor := -1
@@ -180,6 +196,9 @@ func (interpreter *Interpreter) interpretDynamically(element ssa.Instruction) []
 
 func (interpreter *Interpreter) arithmeticGuard(instruction *ssa.BinOp) (symbolic.SymbolicExpression, string) {
 	right := interpreter.resolveExpression(instruction.Y)
+	if right.Type() == symbolic.Float64Type {
+		return nil, ""
+	}
 	switch instruction.Op {
 	case token.QUO, token.REM:
 		return interpreter.fold(symbolic.NewBinaryOperation(right, symbolic.NewTypedIntConstant(0, right.Type()), symbolic.NE)), "integer divide by zero"
@@ -202,6 +221,10 @@ func (interpreter *Interpreter) resolveExpression(value ssa.Value) symbolic.Symb
 		t := expressionType(literal.Type())
 		if t == symbolic.BoolType {
 			return symbolic.NewBoolConstant(constant.BoolVal(literal.Value))
+		}
+		if t == symbolic.Float64Type {
+			value, _ := constant.Float64Val(literal.Value)
+			return symbolic.NewFloatConstant(value)
 		}
 		number, ok := new(big.Int).SetString(literal.Value.ExactString(), 10)
 		if !ok {
@@ -281,6 +304,7 @@ func expressionType(t types.Type) symbolic.ExpressionType {
 	basic, ok := t.Underlying().(*types.Basic)
 	if ok {
 		mapping := map[types.BasicKind]symbolic.ExpressionType{
+			types.Float64: symbolic.Float64Type, types.UntypedFloat: symbolic.Float64Type,
 			types.Bool: symbolic.BoolType, types.UntypedBool: symbolic.BoolType,
 			types.Int: symbolic.IntType, types.UntypedInt: symbolic.IntType, types.UntypedRune: symbolic.Int32Type,
 			types.Int8: symbolic.Int8Type, types.Int16: symbolic.Int16Type, types.Int32: symbolic.Int32Type, types.Int64: symbolic.Int64Type,
@@ -290,7 +314,7 @@ func expressionType(t types.Type) symbolic.ExpressionType {
 			return result
 		}
 	}
-	panic(fmt.Sprintf("analysis: unsupported type %s (only integers and Booleans are supported)", t))
+	panic(fmt.Sprintf("analysis: unsupported type %s (only integers, Booleans and float64 are supported)", t))
 }
 
 func (interpreter Interpreter) String() string {

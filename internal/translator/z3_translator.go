@@ -22,6 +22,7 @@ type Z3Translator struct {
 func NewZ3Translator() *Z3Translator {
 	config := z3.NewContextConfig()
 	ctx := z3.NewContext(config)
+	ctx.SetRoundingMode(z3.RoundToNearestEven)
 	return &Z3Translator{ctx: ctx, config: config, vars: make(map[string]cachedVariable)}
 }
 
@@ -50,7 +51,7 @@ func (zt *Z3Translator) TranslateExpression(expr symbolic.SymbolicExpression) (i
 }
 
 func (zt *Z3Translator) VisitVariable(expr *symbolic.SymbolicVariable) interface{} {
-	if !expr.Type().IsInteger() && expr.Type() != symbolic.BoolType {
+	if !expr.Type().IsInteger() && expr.Type() != symbolic.BoolType && expr.Type() != symbolic.Float64Type {
 		return zt.fail(expr, "unsupported variable type %s", expr.Type())
 	}
 	return zt.variable(expr.Name, symbolic.TypeOf(expr), expr)
@@ -70,6 +71,8 @@ func (zt *Z3Translator) variable(name string, typ *symbolic.TypeInfo, expr symbo
 
 func (zt *Z3Translator) sort(typ *symbolic.TypeInfo) z3.Sort {
 	switch typ.Kind() {
+	case symbolic.Float64Type:
+		return zt.ctx.FloatSort(11, 53)
 	case symbolic.BoolType:
 		return zt.ctx.BoolSort()
 	case symbolic.RefType:
@@ -144,6 +147,32 @@ func (zt *Z3Translator) VisitBinaryOperation(expr *symbolic.BinaryOperation) int
 		}
 	}
 
+	if expr.Left.Type() == symbolic.Float64Type {
+		left, right := leftValue.(z3.Float), rightValue.(z3.Float)
+		switch expr.Operator {
+		case symbolic.ADD:
+			return left.Add(right)
+		case symbolic.SUB:
+			return left.Sub(right)
+		case symbolic.MUL:
+			return left.Mul(right)
+		case symbolic.DIV:
+			return left.Div(right)
+		case symbolic.EQ:
+			return left.IEEEEq(right)
+		case symbolic.NE:
+			return left.IEEEEq(right).Not()
+		case symbolic.LT:
+			return left.LT(right)
+		case symbolic.LE:
+			return left.LE(right)
+		case symbolic.GT:
+			return left.GT(right)
+		case symbolic.GE:
+			return left.GE(right)
+		}
+		return zt.fail(expr, "unsupported floating-point operator %s", expr.Operator)
+	}
 	left, lok := leftValue.(z3.BV)
 	right, rok := rightValue.(z3.BV)
 	if !lok || !rok {
@@ -232,6 +261,13 @@ func (zt *Z3Translator) VisitLogicalOperation(expr *symbolic.LogicalOperation) i
 }
 
 func (zt *Z3Translator) VisitUnaryOperation(expr *symbolic.UnaryOperation) interface{} {
+	if expr.Operand.Type() == symbolic.Float64Type {
+		value := expr.Operand.Accept(zt)
+		if zt.err != nil {
+			return nil
+		}
+		return value.(z3.Float).Neg()
+	}
 	value, ok := expr.Operand.Accept(zt).(z3.BV)
 	if zt.err != nil {
 		return nil
@@ -334,3 +370,7 @@ func (zt *Z3Translator) fail(expr symbolic.SymbolicExpression, format string, ar
 
 var _ Translator = (*Z3Translator)(nil)
 var _ ExpressionTranslator = (*Z3Translator)(nil)
+
+func (zt *Z3Translator) VisitFloatConstant(expr *symbolic.FloatConstant) interface{} {
+	return zt.ctx.FromFloat64(expr.Value, zt.ctx.FloatSort(11, 53))
+}

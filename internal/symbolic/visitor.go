@@ -3,6 +3,7 @@ package symbolic
 // Visitor интерфейс для обхода символьных выражений (Visitor Pattern)
 type Visitor interface {
 	VisitVariable(expr *SymbolicVariable) interface{}
+	VisitFloatConstant(expr *FloatConstant) interface{}
 	VisitIntConstant(expr *IntConstant) interface{}
 	VisitBoolConstant(expr *BoolConstant) interface{}
 	VisitBinaryOperation(expr *BinaryOperation) interface{}

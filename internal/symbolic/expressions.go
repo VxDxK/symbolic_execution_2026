@@ -136,16 +136,22 @@ func NewBinaryOperation(left, right SymbolicExpression, op BinaryOperator) *Bina
 	}
 	leftType, rightType := left.Type(), right.Type()
 	switch op {
-	case ADD, SUB, MUL, DIV, MOD, BIT_AND, BIT_OR, BIT_XOR:
+	case ADD, SUB, MUL, DIV:
+		if leftType != rightType || (!leftType.IsInteger() && leftType != Float64Type) {
+			panic("arithmetic requires matching numeric operands")
+		}
+	case MOD, BIT_AND, BIT_OR, BIT_XOR:
 		requireSameIntegerTypes(leftType, rightType, op.String())
 	case SHL, SHR:
 		if !leftType.IsInteger() || !rightType.IsInteger() {
 			panic(fmt.Sprintf("operator %s requires integer operands", op))
 		}
 	case LT, LE, GT, GE:
-		requireSameIntegerTypes(leftType, rightType, op.String())
+		if leftType != rightType || (!leftType.IsInteger() && leftType != Float64Type) {
+			panic("comparison requires matching numeric operands")
+		}
 	case EQ, NE:
-		if leftType != rightType || (!leftType.IsInteger() && leftType != BoolType && leftType != RefType) {
+		if leftType != rightType || (!leftType.IsInteger() && leftType != BoolType && leftType != RefType && leftType != Float64Type) {
 			panic(fmt.Sprintf("operator %s requires operands of the same primitive type, got %s and %s", op, leftType, rightType))
 		}
 	default:
@@ -321,7 +327,7 @@ func (op UnaryOperator) String() string {
 }
 
 func NewUnaryOperation(operand SymbolicExpression, op UnaryOperator) *UnaryOperation {
-	if operand == nil || !operand.Type().IsInteger() {
+	if operand == nil || (!operand.Type().IsInteger() && !(operand.Type() == Float64Type && op == NEG)) {
 		panic(fmt.Sprintf("unary operator %s requires an integer operand", op))
 	}
 	if op != NEG && op != BIT_NOT {
@@ -491,3 +497,10 @@ func (e *ArrayStore) String() string {
 	return fmt.Sprintf("store(%s, %s, %s)", e.array, e.index, e.value)
 }
 func (e *ArrayStore) Accept(v Visitor) interface{} { return v.VisitArrayStore(e) }
+
+type FloatConstant struct{ Value float64 }
+
+func NewFloatConstant(value float64) *FloatConstant         { return &FloatConstant{Value: value} }
+func (f *FloatConstant) Type() ExpressionType               { return Float64Type }
+func (f *FloatConstant) String() string                     { return fmt.Sprintf("%g", f.Value) }
+func (f *FloatConstant) Accept(visitor Visitor) interface{} { return visitor.VisitFloatConstant(f) }
